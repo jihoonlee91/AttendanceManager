@@ -1,95 +1,205 @@
-id1 = {}
-id_cnt = 0
+import inspect
+import sys
+from abc import ABC, abstractmethod
+from typing import List, Type
 
-# dat[사용자ID][요일]
-dat = [[0] * 100 for _ in range(100)]
-points = [0] * 100
-grade = [0] * 100
-names = [''] * 100
-wed = [0] * 100
-weeken = [0] * 100
+NUM_DAYS = 7
+DAY_INDEX_MAP = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+DAY_SCORE_MAP = {
+    "monday": 1,
+    "tuesday": 1,
+    "wednesday": 3,
+    "thursday": 1,
+    "friday": 1,
+    "saturday": 2,
+    "sunday": 2,
+}
+WEDNESDAY_INDEX = DAY_INDEX_MAP["wednesday"]
+SATURDAY_INDEX = DAY_INDEX_MAP["saturday"]
+SUNDAY_INDEX = DAY_INDEX_MAP["sunday"]
 
-def input2(w, wk):
-    global id_cnt
 
-    if w not in id1:
-        id_cnt += 1
-        id1[w] = id_cnt
-        names[id_cnt] = w
+class Player:
+    def __init__(self, player_id: int, name: str):
+        self.player_id = player_id
+        self.name = name
+        self.attendance = [0] * NUM_DAYS
+        self.point = 0
+        self.grade = 0
+        self.wed_count = 0
+        self.weekend_count = 0
 
-    id2 = id1[w]
+    def mark_attendance(self, day_index: int, point: int):
+        self.attendance[day_index] += 1
+        self.point += point
 
-    add_point = 0
-    index = 0
+        if day_index == WEDNESDAY_INDEX:
+            self.wed_count += 1
 
-    if wk == "monday":
-        index = 0
-        add_point += 1
-    elif wk == "tuesday":
-        index = 1
-        add_point += 1
-    elif wk == "wednesday":
-        index = 2
-        add_point += 3
-        wed[id2] += 1
-    elif wk == "thursday":
-        index = 3
-        add_point += 1
-    elif wk == "friday":
-        index = 4
-        add_point += 1
-    elif wk == "saturday":
-        index = 5
-        add_point += 2
-        weeken[id2] += 1
-    elif wk == "sunday":
-        index = 6
-        add_point += 2
-        weeken[id2] += 1
+        if day_index in {SATURDAY_INDEX, SUNDAY_INDEX}:
+            self.weekend_count += 1
 
-    dat[id2][index] += 1
-    points[id2] += add_point
 
-def input_file():
-    try:
-        with open("attendance_weekday_500.txt", encoding='utf-8') as f:
-            for _ in range(500):
-                line = f.readline()
-                if not line:
-                    break
-                parts = line.strip().split()
-                if len(parts) == 2:
-                    input2(parts[0], parts[1])
+class Policy(ABC):
+    @abstractmethod
+    def apply(self, player: Player):
+        ...
 
-        for i in range(1, id_cnt + 1):
-            if dat[i][3] > 9:
-                points[i] += 10
-            if dat[i][5] + dat[i][6] > 9:
-                points[i] += 10
 
-            if points[i] >= 50:
-                grade[i] = 1
-            elif points[i] >= 30:
-                grade[i] = 2
-            else:
-                grade[i] = 0
+class BonusPolicy(Policy):
+    @abstractmethod
+    def apply(self, player: Player):
+        ...
 
-            print(f"NAME : {names[i]}, POINT : {points[i]}, GRADE : ", end="")
-            if grade[i] == 1:
-                print("GOLD")
-            elif grade[i] == 2:
-                print("SILVER")
-            else:
-                print("NORMAL")
 
-        print("\nRemoved player")
-        print("==============")
-        for i in range(1, id_cnt + 1):
-            if grade[i] not in (1, 2) and wed[i] == 0 and weeken[i] == 0:
-                print(names[i])
+class WednesdayBonusPolicy(BonusPolicy):
+    BONUS_POINT = 10
+    BONUS_THRESHOLD = 10
 
-    except FileNotFoundError:
-        print("파일을 찾을 수 없습니다.")
+    def apply(self, player: Player):
+        if player.attendance[WEDNESDAY_INDEX] >= self.BONUS_THRESHOLD:
+            player.point += self.BONUS_POINT
 
-if __name__ == "__main__":
-    input_file()
+
+class WeekendBonusPolicy(BonusPolicy):
+    BONUS_POINT = 10
+    BONUS_THRESHOLD = 10
+
+    def apply(self, player: Player):
+        if player.attendance[SATURDAY_INDEX] + player.attendance[SUNDAY_INDEX] >= self.BONUS_THRESHOLD:
+            player.point += self.BONUS_POINT
+
+
+class GradePolicy(Policy):
+    @abstractmethod
+    def apply(self, player: Player):
+        ...
+
+
+class DefaultGradePolicy(GradePolicy):
+    GRADES = {
+        "GOLD": (50, 2),
+        "SILVER": (30, 1),
+        "NORMAL": (0, 0)
+    }
+
+    def apply(self, player: Player):
+        for label, (threshold, grade_code) in sorted(self.GRADES.items(), key=lambda x: x[1], reverse=True):
+            if player.point >= threshold:
+                player.grade = grade_code
+                return
+
+    @classmethod
+    def get_label(cls, grade_code: int) -> str:
+        for label, (_, code) in cls.GRADES.items():
+            if code == grade_code:
+                return label
+
+
+class PolicyRegistry(ABC):
+    def __init__(self):
+        self._policies = self._discover_once()
+
+    def _discover_once(self) -> List:
+        return self._discover(self._target_class())
+
+    @abstractmethod
+    def _target_class(self) -> Type:
+        ...
+
+    @staticmethod
+    def _discover(base_cls: Type) -> List:
+        policies = []
+        current_module = sys.modules[__name__]
+        for _, obj in inspect.getmembers(current_module, inspect.isclass):
+            if issubclass(obj, base_cls) and obj not in (base_cls,):
+                policies.append(obj())
+        return policies
+
+    def get_all(self) -> List:
+        return self._policies
+
+
+class BonusPolicyRegistry(PolicyRegistry):
+    def _target_class(self) -> Type:
+        return BonusPolicy
+
+
+class GradePolicyRegistry(PolicyRegistry):
+    def _target_class(self) -> Type:
+        return GradePolicy
+
+
+class AttendanceBook:
+    def __init__(self):
+        self.player_map = {}
+        self.players = []
+
+    def get_or_create_player_id(self, name: str) -> int:
+        if name not in self.player_map:
+            player = Player(len(self.players) + 1, name)
+            self.player_map[name] = player
+            self.players.append(player)
+        return self.player_map[name]
+
+    def record_attendance(self, name: str, day: str):
+        player = self.get_or_create_player_id(name)
+        player.mark_attendance(DAY_INDEX_MAP[day], DAY_SCORE_MAP[day])
+
+    def apply_bonus_policies(self, policies: List[BonusPolicy]):
+        for player in self.players:
+            for policy in policies:
+                policy.apply(player)
+
+    def assign_grade(self, policies: List[GradePolicy]):
+        for player in self.players:
+            for policy in policies:
+                policy.apply(player)
+
+    def display_results(self):
+        for player in self.players:
+            label = DefaultGradePolicy.get_label(player.grade)
+            print(f"NAME : {player.name}, POINT : {player.point}, GRADE : {label}")
+
+    def display_removed_players(self):
+        print("\nRemoved player\n==============")
+        for player in self.players:
+            if (
+                    player.grade == DefaultGradePolicy.GRADES["NORMAL"][1]
+                    and player.wed_count == 0
+                    and player.weekend_count == 0
+            ):
+                print(player.name)
+
+
+class AttendanceManager:
+    def __init__(self, filename):
+        self.filename = filename
+        self.book = AttendanceBook()
+        self.bonus_registry = BonusPolicyRegistry()
+        self.grade_resistry = GradePolicyRegistry()
+
+    def run(self):
+        try:
+            with open(self.filename, encoding='utf-8') as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) == 2:
+                        name, day = parts
+                        self.book.record_attendance(name, day)
+
+            self.book.apply_bonus_policies(self.bonus_registry.get_all())
+            self.book.assign_grade(self.grade_resistry.get_all())
+            self.book.display_results()
+            self.book.display_removed_players()
+
+        except FileNotFoundError:
+            print("파일을 찾을 수 없습니다.")
